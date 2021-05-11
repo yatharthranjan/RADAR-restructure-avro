@@ -41,6 +41,8 @@ class RemoteClient:
                     username=self.user,
                     key_filename=self.ssh_key_filepath,
                     look_for_keys=True,
+                    banner_timeout=2000,
+                    auth_timeout=2000,
                     timeout=5000
                 )
 

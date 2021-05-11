@@ -1,6 +1,7 @@
 import threading
 
 from filelock import FileLock
+from paramiko.ssh_exception import SSHException
 
 from .remoteclient import RemoteClient
 import datetime
@@ -33,24 +34,24 @@ class Restructure:
         self.user = user
         self.ssh_key_path = ssh_key_path
         self.max_files_per_thread = max_files_per_thread
-        self.processed_file_list_path = Path(os.path.join('tmp', 'processed_files'))
-        os.makedirs('tmp', exist_ok=True)
+        os.makedirs(Path(os.path.join('tmp', 'processed_files')), exist_ok=True)
+        os.makedirs(os.path.join('tmp', 'file_list'), exist_ok=True)
+        self.processed_files_path = Path(os.path.join('tmp', 'processed_files', self.files_path.replace('/', '_')))
+        self.file_list_path = Path(os.path.join('tmp', 'file_list', self.files_path.replace('/', '_')))
 
     def get_file_list(self):
-        file_list_path = Path(os.path.join('tmp', 'file_list', self.files_path.replace('/', '_')))
-        if file_list_path.exists():
+        if self.file_list_path.exists():
             # read the list of remote files stored in the file.
-            print(f'File list found in file: {file_list_path}')
-            with open(file_list_path, 'rb') as f:
+            print(f'File list found in file: {self.file_list_path}')
+            with open(self.file_list_path, 'rb') as f:
                 file_list = pickle.load(f)
         else:
-            print('File list not found in file: Downloading from server')
-            os.makedirs(os.path.join('tmp', 'file_list'), exist_ok=True)
+            print(f'File list not found in file: {self.file_list_path}. Downloading from server...')
             # get files from remote server and save to file.
             remote_client = RemoteClient(self.host, self.user, self.ssh_key_path)
             file_list = remote_client.list_dir(self.files_path)
             remote_client.disconnect()
-            with open(file_list_path, 'wb+') as f:
+            with open(self.file_list_path, 'wb+') as f:
                 pickle.dump(file_list, f)
         return file_list
 
@@ -59,9 +60,10 @@ class Restructure:
             i = 0
             futures = []
             processed_files = ""
-            if self.processed_file_list_path.exists():
+
+            if self.processed_files_path.exists():
                 with processed_files_lock:
-                    with open(self.processed_file_list_path, 'r') as pf:
+                    with open(self.processed_files_path, 'r') as pf:
                         processed_files = pf.read()
                         count_processed = processed_files.count("\n")
                         print(f'Number of files already processed: {count_processed}')
@@ -100,9 +102,15 @@ class Restructure:
         tmp_file_path = Path(os.path.join('tmp', file_name))
 
         if not tmp_file_path.exists():
-            remote_client = RemoteClient(self.host, self.user, self.ssh_key_path)
-            remote_client.download_file(file_path, f'tmp/{file_name}')
-            remote_client.disconnect()
+            try:
+                remote_client = RemoteClient(self.host, self.user, self.ssh_key_path)
+                remote_client.download_file(file_path, f'tmp/{file_name}')
+                remote_client.disconnect()
+            except SSHException as sshe:
+                print(f"Could not download the file, will wait and try again: ", sshe)
+                # Make this thread sleep so we don't hit SSH limits
+                time_profile.sleep(0.1)
+                return self.process_data(file_path)
 
         with open(f'tmp/{file_name}', 'rb') as f:
             try:
@@ -154,7 +162,7 @@ class Restructure:
             os.remove(f'tmp/{file_name}')
 
         with processed_files_lock:
-            with open(self.processed_file_list_path, 'a+') as pf:
+            with open(self.processed_files_path, 'a+') as pf:
                 pf.write(f"{file_path}\n")
 
         return f"Processed file: {file_path}"
